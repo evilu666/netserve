@@ -3,7 +3,7 @@ import zmq
 from abc import abstractmethod
 
 from transformers import pipeline
-from huggingface_hub import snapshot_download
+from huggingface_hub import snapshot_download, scan_cache_dir
 
 __DEBUG = False
 
@@ -58,6 +58,15 @@ def handle_pipeline_control(req: PipelineControlRequest) -> PipelineControlRespo
         return PipelineControlResponse(PipelineStatus.RUNNING)
     else:
         return PipelineControlResponse( PipelineStatus.STOPPED)
+
+@handler(ModelListingRequest)
+def handle_model_listing(req: ModelListingRequest) -> ModelListingResponse:
+    models = []
+    for repo_info in scan_cache_dir().repos:
+        if repo_info.repo_type == "model":
+            models.append(ModelInfo(repo_info.repo_id, repo_info.size_on_disk))
+    return ModelListingResponse(models)
+
 
 @handler(TextGenerationRequest)
 def handle_text_generation(req: TextGenerationRequest) -> TextGenerationResponse:

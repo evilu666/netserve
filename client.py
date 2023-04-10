@@ -5,6 +5,7 @@ import zmq
 from abc import abstractmethod
 
 from transformers import pipeline
+from prettytable import PrettyTable
 
 import argparse
 
@@ -13,6 +14,14 @@ socket = context.socket(zmq.REQ)
 socket.connect("ipc:///tmp/netserve")
 
 __DEBUG = False
+
+# https://stackoverflow.com/a/1094933
+def sizeof_fmt(num, suffix="B"):
+    for unit in ["", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi"]:
+        if abs(num) < 1024.0:
+            return f"{num:3.1f}{unit}{suffix}"
+        num /= 1024.0
+    return f"{num:.1f}Yi{suffix}"
 
 def send_request(req: Request, timeout: int = 30) -> Response:
     socket.send(bytes(req.TYPE_NAME, 'utf-8'))
@@ -48,10 +57,14 @@ def handle_model_mode(args):
         else:
             print("ERROR")
     elif args.action == "list":
-        resp = send_request(PipelineListingRequest(filter_regex = args.filter if args.filter else None))
+        resp = send_request(ModelListingRequest(filter_regex = args.filter if args.filter else None))
         if resp:
-            for model in resp.pipelines:
-                print(model)
+            tbl = PrettyTable();
+            tbl.field_names = ["Name", "Size"]
+            for model in resp.models:
+                tbl.add_row([model.name, sizeof_fmt(model.size)])
+            print("Models:")
+            print(tbl)
     elif args.action == "install":
         if not args.model:
             print("Error: Must provide a model to install!", file=sys.stderr)

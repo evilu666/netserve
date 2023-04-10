@@ -75,15 +75,20 @@ class PipelineControlRequest(Request):
 class PipelineControlResponse(Response):
     status: PipelineStatus
 
-@request("PipelineListing")
 @dataclass
-class PipelineListingRequest(Request):
+class ModelInfo(JSONWizard):
+    name: str
+    size: int
+
+@request("ModelListing")
+@dataclass
+class ModelListingRequest(Request):
     filter_regex: str = None
 
-@response("PipelineListing")
+@response("ModelListing")
 @dataclass
-class PipelineListingResponse(Response):
-    pipelines: list[str]
+class ModelListingResponse(Response):
+    models: list[ModelInfo]
 
 @request("ModelInstall")
 @dataclass

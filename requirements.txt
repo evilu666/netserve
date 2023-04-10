@@ -2,3 +2,5 @@ transformers[pytorch]
 transformers[flax]
 dataclass-wizard  
 pyzmq
+huggingface_hub
+prettytable
