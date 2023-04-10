@@ -12,6 +12,8 @@ context = zmq.Context()
 socket = context.socket(zmq.REQ)
 socket.connect("ipc:///tmp/netserve")
 
+__DEBUG = False
+
 def send_request(req: Request, timeout: int = 30) -> Response:
     socket.send(bytes(req.TYPE_NAME, 'utf-8'))
     socket.recv()
@@ -23,7 +25,7 @@ def send_request(req: Request, timeout: int = 30) -> Response:
 
     response_text = str(socket.recv(), "utf-8")
 
-    print("Response type:", response_type, "Text:", response_text, file=sys.stderr)
+    if __DEBUG: print("Response type:", response_type, "Text:", response_text, file=sys.stderr)
 
     resp = parse_response(response_type, response_text)
 
@@ -50,6 +52,18 @@ def handle_model_mode(args):
         if resp:
             for model in resp.pipelines:
                 print(model)
+    elif args.action == "install":
+        if not args.model:
+            print("Error: Must provide a model to install!", file=sys.stderr)
+            return
+        print("Installing model '%s', this may take a while... " % args.model, end="")
+        resp = send_request(ModelInstallRequest(args.model))
+
+        if resp:
+            print("DONE")
+        else:
+            print("ERROR")
+
 
 def handle_generate_mode(args):
     text = None
@@ -70,8 +84,8 @@ if __name__ == "__main__":
     parser.add_argument("-t", "--timeout", default = 30, type=int, help="Timeout in seconds to wait for command completion before aborting")
     root_subparsers = parser.add_subparsers()
 
-    model_parser = root_subparsers.add_parser("model", help="List, start or stop available models")
-    model_parser.add_argument("action", choices = ["start", "stop", "restart", "list"], help="The action to perform")
+    model_parser = root_subparsers.add_parser("model", help="List, install, start or stop available models")
+    model_parser.add_argument("action", choices = ["start", "stop", "restart", "list", "install"], help="The action to perform")
     model_parser.add_argument("model", nargs = '?', type=str, help="The model for which to perform the action (not needed for the list action)")
     model_parser.add_argument("-f", "--filter", nargs = '?', type=str, help="Pattern to use for filtering when using the list option")
     model_parser.set_defaults(func = handle_model_mode)

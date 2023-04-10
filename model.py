@@ -84,3 +84,13 @@ class PipelineListingRequest(Request):
 @dataclass
 class PipelineListingResponse(Response):
     pipelines: list[str]
+
+@request("ModelInstall")
+@dataclass
+class ModelInstallRequest(Request):
+    model: str
+
+@response("ModelInstall")
+@dataclass
+class ModelInstallResponse(Response):
+    pass

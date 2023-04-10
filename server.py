@@ -3,6 +3,9 @@ import zmq
 from abc import abstractmethod
 
 from transformers import pipeline
+from huggingface_hub import snapshot_download
+
+__DEBUG = False
 
 context = zmq.Context()
 socket = context.socket(zmq.REP)
@@ -66,14 +69,22 @@ def handle_text_generation(req: TextGenerationRequest) -> TextGenerationResponse
     except Exception as e:
         return ErrorResponse(str(e))
 
+@handler(ModelInstallRequest)
+def handle_model_install(req: ModelInstallRequest) -> ModelInstallResponse:
+    try:
+        snapshot_download(req.model)
+        return ModelInstallResponse()
+    except Exception as e:
+        return ErrorResponse(str(e))
+
 while True:
     request_type: str = str(socket.recv(), "utf-8")
     socket.send(ACK)
-    print("Received request of type: %s" % request_type)
+    if __DEBUG: print("Received request of type: %s" % request_type)
 
     request_text = str(socket.recv(), "utf-8")
 
-    print("Request text:", request_text)
+    if __DEBUG: print("Request text:", request_text)
 
     resp = None
     if request_type not in __request_handlers:
@@ -82,7 +93,7 @@ while True:
         handler = __request_handlers[request_type]
         resp = handler(request_text)
 
-    print("Sending response: ", resp)
+    if __DEBUG: print("Sending response: ", resp)
     socket.send(bytes(resp.TYPE_NAME, 'utf-8'))
     socket.recv()
 
