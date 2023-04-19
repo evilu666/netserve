@@ -54,15 +54,30 @@ class TextGenerationRequest(Request):
 class TextGenerationResponse(Response):
     text: str
 
+@request("Conversation")
+@dataclass
+class ConversationRequest(Request):
+    model: str
+    text: str
+    past_inputs: list[str] | None = None
+    past_responses: list[str]| None = None
+    min_length: int = 50
+    uuid: str | None = None
+
+@response("Conversation")
+@dataclass
+class ConversationResponse(Response):
+    response: str
+
 class ControlType(Enum):
-    START = auto()
-    STOP = auto()
-    RESTART = auto()
+    START = 1
+    STOP = 2
+    RESTART = 3
 
 class PipelineStatus(Enum):
-    UNKNOWN = auto()
-    RUNNING = auto()
-    STOPPED = auto()
+    UNKNOWN = 1
+    RUNNING = 2
+    STOPPED = 3
 
 @request("PipelineControl")
 @dataclass

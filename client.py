@@ -90,6 +90,15 @@ def handle_generate_mode(args):
     if resp:
         print(resp.text)
 
+def handle_converse_mode(args):
+    if len(args.past_input) != len(args.past_response):
+        print("Error: past inputs length must match past responses length")
+        return
+
+    resp = send_request(ConversationRequest(args.model, args.input, past_inputs = args.past_input, past_responses = args.past_response, min_length=args.min_length))
+    if resp:
+        print(resp.response)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description = "Interact with ai models using the huggingface transformers library")
     parser.add_argument("--port", required=False, default=3892, type=int, help="Port to connect on (only needed for certain protocols)")
@@ -114,6 +123,14 @@ if __name__ == "__main__":
     generate_parser.add_argument("-i", "--stdin", action="store_true", help="When set to true will read the input text from the standard input")
     generate_parser.add_argument("-m", "--max-length", type=int, default=50, help="Maximum number of additional tokens to generate")
     generate_parser.set_defaults(func = handle_generate_mode)
+
+    converse_parser = root_subparsers.add_parser("converse", help="Gnerate text in a conversational format")
+    converse_parser.add_argument("model", type=str, help="The model to use for text generation")
+    converse_parser.add_argument("input", type=str, help="The user input to get a response for")
+    converse_parser.add_argument("--past-input", type=str, nargs="*", default=[], help="A past user input, can be specified multiple times but must match the past response count")
+    converse_parser.add_argument("--past-response", type=str, nargs="*", default=[], help="A past respone, can be specified multiple times but must match the past user input count")
+    converse_parser.add_argument("-m", "--min-length", type=int, default=50, help="Minimum number of tokens to generate")
+    converse_parser.set_defaults(func = handle_converse_mode)
 
     args = parser.parse_args()
 

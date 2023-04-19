@@ -4,7 +4,7 @@ from model import *
 import zmq
 from abc import abstractmethod
 
-from transformers import pipeline
+from transformers import pipeline, Conversation
 from huggingface_hub import snapshot_download, scan_cache_dir
 
 import argparse
@@ -82,6 +82,20 @@ def handle_text_generation(req: TextGenerationRequest) -> TextGenerationResponse
     except Exception as e:
         traceback.print_exc()
         return ErrorResponse(str(e))
+
+@handler(ConversationRequest)
+def handle_conversation(req: ConversationRequest) -> ConversationResponse:
+    if req.model not in GlobalState.running_pipelines or not GlobalState.running_pipelines[req.model]:
+        GlobalState.running_pipelines[req.model] = pipeline(model = req.model)
+
+    try:
+        conv = Conversation(req.text, req.uuid, req.past_inputs, req.past_responses)
+        conv = GlobalState.running_pipelines[req.model](conv, min_length_for_response = req.min_length)
+        return ConversationResponse(conv.generated_responses[-1])
+    except Exception as e:
+        traceback.print_exc()
+        return ErrorResponse(str(e))
+
 
 @handler(ModelInstallRequest)
 def handle_model_install(req: ModelInstallRequest) -> ModelInstallResponse:
