@@ -4,3 +4,4 @@ dataclass-wizard
 pyzmq
 huggingface_hub
 prettytable
+sentencepiece

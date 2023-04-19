@@ -1,3 +1,5 @@
+import sys
+import traceback
 from model import *
 import zmq
 from abc import abstractmethod
@@ -5,11 +7,12 @@ from abc import abstractmethod
 from transformers import pipeline
 from huggingface_hub import snapshot_download, scan_cache_dir
 
-__DEBUG = False
+import argparse
 
-context = zmq.Context()
-socket = context.socket(zmq.REP)
-socket.bind("ipc:///tmp/netserve")
+__DEBUG = True
+
+
+
 
 class GlobalState:
     running_pipelines = dict()
@@ -54,6 +57,7 @@ def handle_pipeline_control(req: PipelineControlRequest) -> PipelineControlRespo
             try:
                 GlobalState.running_pipelines[req.model] = pipeline(model = req.model)
             except Exception as e:
+                traceback.print_exc()
                 return ErrorResponse(str(e))
         return PipelineControlResponse(PipelineStatus.RUNNING)
     else:
@@ -74,8 +78,9 @@ def handle_text_generation(req: TextGenerationRequest) -> TextGenerationResponse
         GlobalState.running_pipelines[req.model] = pipeline(model = req.model)
 
     try:
-        return TextGenerationResponse(GlobalState.running_pipelines[req.model](req.text, max_length = req.max_length)[0]["generated_text"])
+        return TextGenerationResponse(GlobalState.running_pipelines[req.model](req.text, max_new_tokens = req.max_length)[0]["generated_text"])
     except Exception as e:
+        traceback.print_exc()
         return ErrorResponse(str(e))
 
 @handler(ModelInstallRequest)
@@ -84,26 +89,41 @@ def handle_model_install(req: ModelInstallRequest) -> ModelInstallResponse:
         snapshot_download(req.model)
         return ModelInstallResponse()
     except Exception as e:
+        traceback.print_exc()
         return ErrorResponse(str(e))
 
-while True:
-    request_type: str = str(socket.recv(), "utf-8")
-    socket.send(ACK)
-    if __DEBUG: print("Received request of type: %s" % request_type)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description = "Interact with ai models using the huggingface transformers library")
+    parser.add_argument("--port", required=False, default=3892, type=int, help="Port to listen on (only needed for certain protocols)")
+    parser.add_argument("--host", required=False, default="127.0.0.1", help="Hostname of the interface to bind to (only needed for certain protocols)")
+    parser.add_argument("--protocol", required=False, default="ipc", choices=("ipc", "tcp"), help="Protocol to listen for requests on")
+    parser.add_argument("--socket", required=False, default="/tmp/netserve", help="Path or name of the socket to bind to (only needed for certain protocols)")
+    parser.add_argument("-d", "--debug", required=False, default=False, action="store_true", help="Enabled debug log")
 
-    request_text = str(socket.recv(), "utf-8")
+    args = parser.parse_args()
 
-    if __DEBUG: print("Request text:", request_text)
+    __DEBUG = args.debug
 
-    resp = None
-    if request_type not in __request_handlers:
-        resp = ErrorResponse("No handler registered for request of type: %s" % request_type)
+    context = zmq.Context()
+    socket = context.socket(zmq.REP)
+    if args.protocol == "ipc":
+        socket.bind(f"{args.protocol}://{args.socket}")
     else:
-        handler = __request_handlers[request_type]
-        resp = handler(request_text)
+        socket.bind(f"{args.protocol}://{args.host}:{args.port}")
 
-    if __DEBUG: print("Sending response: ", resp)
-    socket.send(bytes(resp.TYPE_NAME, 'utf-8'))
-    socket.recv()
+    while True:
+        req = str(socket.recv(), "utf-8")
+        request_type = req[:req.index(" ")]
+        request_text = req[req.index(" ")+1:]
 
-    socket.send(bytes(resp.to_json(), 'utf-8'))
+        if __DEBUG: print("Request text:", request_text)
+
+        resp = None
+        if request_type not in __request_handlers:
+            resp = ErrorResponse("No handler registered for request of type: %s" % request_type)
+        else:
+            handler = __request_handlers[request_type]
+            resp = handler(request_text)
+
+        if __DEBUG: print("Sending response: ", resp)
+        socket.send(bytes(resp.TYPE_NAME + " " + resp.to_json(), 'utf-8'))
