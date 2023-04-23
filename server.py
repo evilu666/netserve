@@ -71,7 +71,7 @@ def handle_model_listing(req: ModelListingRequest) -> ModelListingResponse:
             models.append(ModelInfo(
                 repo_info.repo_id,
                 repo_info.size_on_disk,
-                repo_info.repo_id in GlobalState.running_pipelines and GlobalState.running_pipelines[repo_info.repo_id]
+                repo_info.repo_id in GlobalState.running_pipelines and GlobalState.running_pipelines[repo_info.repo_id] is not None
             ))
     return ModelListingResponse(models)
 
