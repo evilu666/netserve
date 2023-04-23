@@ -11,4 +11,4 @@ DIR=$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )
 cd $DIR
 
 source .env/bin/activate
-python client.py $@
+python client.py "$@"
