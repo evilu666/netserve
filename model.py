@@ -94,6 +94,7 @@ class PipelineControlResponse(Response):
 class ModelInfo(JSONWizard):
     name: str
     size: int
+    running: bool
 
 @request("ModelListing")
 @dataclass

@@ -68,7 +68,11 @@ def handle_model_listing(req: ModelListingRequest) -> ModelListingResponse:
     models = []
     for repo_info in scan_cache_dir().repos:
         if repo_info.repo_type == "model":
-            models.append(ModelInfo(repo_info.repo_id, repo_info.size_on_disk))
+            models.append(ModelInfo(
+                repo_info.repo_id,
+                repo_info.size_on_disk,
+                repo_info.repo_id in GlobalState.running_pipelines and GlobalState.running_pipelines[repo_info.repo_id]
+            ))
     return ModelListingResponse(models)
 
 

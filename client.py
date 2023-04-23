@@ -59,9 +59,9 @@ def handle_model_mode(args):
                     print(model.name)
             else:
                 tbl = PrettyTable();
-                tbl.field_names = ["Name", "Size"]
+                tbl.field_names = ["Name", "Size", "Running"]
                 for model in resp.models:
-                    tbl.add_row([model.name, sizeof_fmt(model.size)])
+                    tbl.add_row([model.name, sizeof_fmt(model.size), "Yes" if model.running else "No"])
                 print(tbl)
     elif args.action == "install":
         if not args.model:
