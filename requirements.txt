@@ -1,4 +1,5 @@
-transformers[pytorch]
+transformers[torch]
+transformers[tf-cpu]
 transformers[flax]
 dataclass-wizard  
 pyzmq
