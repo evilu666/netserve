@@ -49,6 +49,15 @@ class TextGenerationRequest(Request):
     text: str
     max_length: int = 50
 
+@dataclass
+class ResultRequest(Request):
+    job_id: str
+
+@request("TextGenerationResult")
+@dataclass
+class TextGenerationResultRequest(ResultRequest):
+    pass
+
 @response("TextGeneration")
 @dataclass
 class TextGenerationResponse(Response):
@@ -64,6 +73,11 @@ class ConversationRequest(Request):
     min_length: int = 50
     uuid: str | None = None
 
+@request("ConversationResult")
+@dataclass
+class ConversationResultRequest(ResultRequest):
+    pass
+
 @response("Conversation")
 @dataclass
 class ConversationResponse(Response):
@@ -75,7 +89,7 @@ class ControlType(Enum):
     RESTART = 3
 
 class PipelineStatus(Enum):
-    UNKNOWN = 1
+    STARTING = 1
     RUNNING = 2
     STOPPED = 3
 
@@ -84,6 +98,10 @@ class PipelineStatus(Enum):
 class PipelineControlRequest(Request):
     model: str
     control_type: ControlType
+
+@request("PipelineControlResult")
+class PipelineControlResultRequest(ResultRequest):
+    pass
 
 @response("PipelineControl")
 @dataclass
@@ -94,12 +112,17 @@ class PipelineControlResponse(Response):
 class ModelInfo(JSONWizard):
     name: str
     size: int
-    running: bool
+    status: PipelineStatus
 
 @request("ModelListing")
 @dataclass
 class ModelListingRequest(Request):
     filter_regex: str = None
+
+@request("ModelListingResult")
+@dataclass
+class ModelListingResultRequest(ResultRequest):
+    pass
 
 @response("ModelListing")
 @dataclass
@@ -111,7 +134,38 @@ class ModelListingResponse(Response):
 class ModelInstallRequest(Request):
     model: str
 
+@request("ModelInstallResult")
+@dataclass
+class ModelInstallResultRequest(ResultRequest):
+    pass
+
 @response("ModelInstall")
 @dataclass
 class ModelInstallResponse(Response):
     pass
+
+@response("JobInfo")
+@dataclass
+class JobInfoResponse(Response):
+    job_id: str
+
+class JobStatus(Enum):
+    SCHEDULED = 1
+    RUNNING = 2
+    DONE = 3
+
+@response("JobStatus")
+@dataclass
+class JobStatusResponse(Response):
+    job_id: str
+    status: JobStatus
+
+@response("JobProgress")
+@dataclass
+class JobProgressResponse(Response):
+    job_id: str
+    progress: float
+
+class Topics:
+    JOB_STATUS = "status"
+    JOB_PROGRESS = "progress"

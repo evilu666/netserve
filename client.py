@@ -1,6 +1,7 @@
 
 import sys
 from model import *
+from messaging import send_message, receive_message
 import zmq
 from abc import abstractmethod
 
@@ -23,21 +24,43 @@ def sizeof_fmt(num, suffix="B"):
 def send_request(req: Request, timeout: int = 30) -> Response:
     global socket
 
-    socket.send(bytes(req.TYPE_NAME + " " + req.to_json(), 'utf-8'))
-    result = str(socket.recv(), "utf-8")
+    send_message(socket, req)
+    resp = receive_message(socket)
 
-    response_type = result[:result.index(" ")]
-    response_text = result[result.index(" ")+1:]
-
-    if __DEBUG: print("Response type:", response_type, "Text:", response_text, file=sys.stderr)
-
-    resp = parse_response(response_type, response_text)
-
-    if response_type == ErrorResponse.TYPE_NAME:
+    if __DEBUG: print(f"Response type: {resp.TYPE_NAME}, Content: {resp.to_json()}")
+    if resp.TYPE_NAME == ErrorResponse.TYPE_NAME:
         print("Error: " + resp.msg, file = sys.stderr)
         return False
-    else:
-        return resp
+
+    return resp
+
+def send_async_request(req: Request, result_request_type: ResultRequest, timeout: int = 30) -> Response:
+    global socket
+    global subscriber
+
+    send_message(socket, req)
+    jobInfo: JobInfoResponse = receive_message(socket)
+
+    if __DEBUG: print(f"Job scheduled with id {jobInfo.job_id}", file=sys.stderr)
+
+    topic, jobStatus = receive_message(subscriber, has_topic=True)
+
+    while jobStatus.status != JobStatus.DONE:
+        if __DEBUG: print(f"Received status update for job with id {jobStatus.job_id}: {JobStatus(jobStatus).name}", file=sys.stderr)
+
+        topic, jobStatus = receive_message(subscriber, has_topic=True)
+
+    if __DEBUG: print(f"Received last status update for job with id {jobStatus.job_id}: {JobStatus(jobStatus.status).name}", file=sys.stderr)
+
+    send_message(socket, result_request_type(jobInfo.job_id))
+    resp: Response = receive_message(socket)
+
+    if __DEBUG: print(f"Response type: {resp.TYPE_NAME}, Content: {resp.to_json()}")
+    if resp.TYPE_NAME == ErrorResponse.TYPE_NAME:
+        print("Error: " + resp.msg, file = sys.stderr)
+        return False
+
+    return resp
 
 def handle_model_mode(args):
     if args.action in {"start", "stop", "restart"}:
@@ -46,7 +69,7 @@ def handle_model_mode(args):
             return
 
         print(args.action.capitalize() + ("ing model '%s'... " % args.model), end = "")
-        resp = send_request(PipelineControlRequest(model = args.model, control_type = ControlType[args.action.upper()]))
+        resp = send_async_request(PipelineControlRequest(model = args.model, control_type = ControlType[args.action.upper()]), PipelineControlResultRequest)
         if resp:
             print("DONE")
         else:
@@ -59,16 +82,16 @@ def handle_model_mode(args):
                     print(model.name)
             else:
                 tbl = PrettyTable();
-                tbl.field_names = ["Name", "Size", "Running"]
+                tbl.field_names = ["Name", "Size", "Status"]
                 for model in resp.models:
-                    tbl.add_row([model.name, sizeof_fmt(model.size), "Yes" if model.running else "No"])
+                    tbl.add_row([model.name, sizeof_fmt(model.size), PipelineStatus(model.status).name])
                 print(tbl)
     elif args.action == "install":
         if not args.model:
             print("Error: Must provide a model to install!", file=sys.stderr)
             return
         print("Installing model '%s', this may take a while... " % args.model, end="")
-        resp = send_request(ModelInstallRequest(args.model))
+        resp = send_async_request(ModelInstallRequest(args.model), ModelInstallResultRequest)
 
         if resp:
             print("DONE")
@@ -86,7 +109,7 @@ def handle_generate_mode(args):
             return
         text = args.text
 
-    resp = send_request(TextGenerationRequest(args.model, text, max_length=args.max_length))
+    resp = send_async_request(TextGenerationRequest(args.model, text, max_length=args.max_length), TextGenerationResultRequest)
     if resp:
         print(resp.text)
 
@@ -95,7 +118,15 @@ def handle_converse_mode(args):
         print("Error: past inputs length must match past responses length")
         return
 
-    resp = send_request(ConversationRequest(args.model, args.input, past_inputs = args.past_input, past_responses = args.past_response, min_length=args.min_length))
+    resp = send_async_request(ConversationRequest(
+        args.model,
+        args.input,
+        past_inputs = args.past_input,
+        past_responses = args.past_response,
+        min_length=args.min_length),
+        ConversationResultRequest
+    )
+
     if resp:
         print(resp.response)
 
@@ -136,11 +167,19 @@ if __name__ == "__main__":
 
     __DEBUG = args.debug
 
-    context = zmq.Context()
-    socket = context.socket(zmq.REQ)
-    if args.protocol == "ipc":
-        socket.connect(f"{args.protocol}://{args.socket}")
-    else:
-        socket.connect(f"{args.protocol}://{args.host}:{args.port}")
+    if args.func:
+        context = zmq.Context()
+        socket = context.socket(zmq.REQ)
 
-    args.func(args)
+        subscriber = context.socket(zmq.SUB)
+
+        if args.protocol == "ipc":
+            socket.connect(f"{args.protocol}://{args.socket}")
+            subscriber.connect(f"{args.protocol}://{args.socket}_sub")
+        else:
+            socket.connect(f"{args.protocol}://{args.host}:{args.port}")
+            subscriber.connect(f"{args.protocol}://{args.host}:{args.port+1}")
+
+        subscriber.setsockopt_string(zmq.SUBSCRIBE, Topics.JOB_STATUS)
+
+        args.func(args)

@@ -6,3 +6,6 @@ pyzmq
 huggingface_hub
 prettytable
 sentencepiece
+ray
+psutil
+nest_asyncio
