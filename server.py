@@ -148,7 +148,7 @@ class ProgressActor:
 async def handle_progress(socket_bind: str, progress_actor: ActorHandle):
     global context
     socket = context.socket(zmq.PUB)
-    if __DEBUG: print(f"Binding pub socket to {socket_bind}", file=sys.stderr)
+    if __DEBUG: print(f"Binding pub socket to:", socket_bind, file=sys.stderr)
     socket.bind(socket_bind)
 
     while True:
@@ -567,7 +567,7 @@ if __name__ == "__main__":
         publisher_socket_bind = f"{args.protocol}://{args.socket}_sub"
     else:
         server_socket_bind = f"{args.protocol}://{args.host}:{args.port}"
-        publisher_socket_bind = "f{args.protocol}://{args.host}:{args.port+1}"
+        publisher_socket_bind = f"{args.protocol}://{args.host}:{args.port+1}"
 
 
     context = zmq.asyncio.Context(io_threads=2)
