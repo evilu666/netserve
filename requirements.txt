@@ -9,3 +9,4 @@ sentencepiece
 ray
 psutil
 nest_asyncio
+progressbar2

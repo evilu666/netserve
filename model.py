@@ -92,6 +92,7 @@ class PipelineStatus(Enum):
     STARTING = 1
     RUNNING = 2
     STOPPED = 3
+    INSTALLING = 4
 
 @request("PipelineControl")
 @dataclass

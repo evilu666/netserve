@@ -19,9 +19,11 @@ import asyncio
 import zmq
 import zmq.asyncio
 import threading
+import concurrent.futures
 
 import time
 
+from tqdm.auto import tqdm as std_tqdm
 import argparse
 
 NOOP = lambda x: None
@@ -177,12 +179,14 @@ async def handle_progress(socket_bind: str, progress_actor: ActorHandle):
 class PipelineActor:
     running_pipelines: dict
     starting_pipelines: set
+    installing_pipelines: set
     control_lock: Lock
     pipeline_locks: dict
 
     def __init__(self):
         self.running_pipelines = {}
         self.starting_pipelines = set()
+        self.installing_pipelines = set()
         self.control_lock = Lock()
         self.pipeline_locks = {}
 
@@ -191,10 +195,19 @@ class PipelineActor:
         if name in self.starting_pipelines:
             return PipelineStatus.STARTING
 
+        if name in self.installing_pipelines:
+            return PipelineStatus.INSTALLING
+
         if name in self.running_pipelines and self.running_pipelines[name]:
             return PipelineStatus.RUNNING
 
         return PipelineStatus.STOPPED
+
+    def mark_installing(self, name: str):
+        self.installing_pipelines.add(name)
+
+    def mark_install_done(self, name: str):
+        self.installing_pipelines.discard(name)
 
     def start_pipeline(self, name: str, callback: callable):
         async def __run():
@@ -329,7 +342,10 @@ def restart_pipeline(job_id: str, name: str, pipeline_actor: ActorHandle, progre
     run_sync(__run())
 
 @handler(PipelineControlRequest)
-def handle_pipeline_control(state: GlobalState, req: PipelineControlRequest) -> JobInfoResponse:
+def handle_pipeline_control(state: GlobalState, req: PipelineControlRequest) -> JobInfoResponse | ErrorResponse:
+    if ray.get(state.pipeline_actor.get_status.remote(req.model)) == PipelineStatus.INSTALLING:
+        return ErrorResponse("Pipeline is currently installing")
+
     uuid = JobHandler.reserve_id()
 
     ref = None
@@ -465,21 +481,43 @@ def handle_conversation_result(state: GlobalState, req: ConversationResultReques
     print("Popped result:", text_or_error, file=sys.stderr)
     return text_or_error if isinstance(text_or_error, ErrorResponse) else ConversationResponse(text_or_error)
 
+
 @ray.remote
 def install_model(job_id: str, model: str, progress_actor: ActorHandle, result_actor: ActorHandle):
-    result = None
-    try:
-        snapshot_download(model)
-        result = True
-    except Exception as e:
-        traceback.print_exc()
-        result = ErrorResponse(str(e))
 
-    ray.get(progress_actor.update_done.remote(job_id))
-    ray.get(result_actor.put_result.remote(job_id, result))
+
+    async def __run():
+
+        class ProgressHandler(std_tqdm):
+            def update(self, n=1):
+                display = super(ProgressHandler, self).update(n)
+                if display:
+                    ray.get(progress_actor.update.remote(job_id, self.n / self.total))
+                return display
+
+            def display(self, *args, **kwargs):
+                pass
+
+
+        result = None
+        try:
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(pool, lambda: snapshot_download(model, max_workers=4, tqdm_class=ProgressHandler))
+            result = True
+        except Exception as e:
+            traceback.print_exc()
+            result = ErrorResponse(str(e))
+
+        ray.get(progress_actor.update_done.remote(job_id))
+        ray.get(result_actor.put_result.remote(job_id, result))
+    run_sync(__run())
 
 @handler(ModelInstallRequest)
 def handle_model_install(state: GlobalState, req: ModelInstallRequest) -> JobInfoResponse:
+    if ray.get(state.pipeline_actor.get_status.remote(req.model)) == PipelineStatus.INSTALLING:
+        return ErrorResponse("Model is currently installing")
+
     uuid = JobHandler.reserve_id()
     ref = install_model.remote(uuid, req.model, state.progress_actor, state.result_actor)
     JobHandler.put_job(uuid, ref)

@@ -10,6 +10,8 @@ from prettytable import PrettyTable
 
 import argparse
 
+import progressbar
+
 
 __DEBUG = False
 
@@ -34,6 +36,7 @@ def send_request(req: Request, timeout: int = 30) -> Response:
 
     return resp
 
+
 def send_async_request(req: Request, result_request_type: ResultRequest, timeout: int = 30) -> Response:
     global socket
     global subscriber
@@ -43,14 +46,24 @@ def send_async_request(req: Request, result_request_type: ResultRequest, timeout
 
     if __DEBUG: print(f"Job scheduled with id {jobInfo.job_id}", file=sys.stderr)
 
-    topic, jobStatus = receive_message(subscriber, has_topic=True)
 
-    while jobStatus.status != JobStatus.DONE:
-        if __DEBUG: print(f"Received status update for job with id {jobStatus.job_id}: {JobStatus(jobStatus).name}", file=sys.stderr)
+    is_done = False
 
-        topic, jobStatus = receive_message(subscriber, has_topic=True)
+    pb = progressbar.ProgressBar(max_value=1.0)
 
-    if __DEBUG: print(f"Received last status update for job with id {jobStatus.job_id}: {JobStatus(jobStatus.status).name}", file=sys.stderr)
+    while not is_done:
+        topic, update = receive_message(subscriber, has_topic=True)
+
+        if isinstance(update, JobStatusResponse):
+            if update.status != JobStatus.DONE:
+                if __DEBUG: print(f"Received status update for job with id {update.job_id}: {JobStatus(update.status).name}", file=sys.stderr)
+            else:
+                if __DEBUG: print(f"Received last status update for job with id {update.job_id}: {JobStatus(update.status).name}", file=sys.stderr)
+                if pb.currval != 1.0:
+                    pb.update(1.0)
+                is_done = True
+        else:
+            pb.update(update.progress)
 
     send_message(socket, result_request_type(jobInfo.job_id))
     resp: Response = receive_message(socket)
@@ -90,14 +103,8 @@ def handle_model_mode(args):
         if not args.model:
             print("Error: Must provide a model to install!", file=sys.stderr)
             return
-        print("Installing model '%s', this may take a while... " % args.model, end="")
+        print("Installing model '%s', this may take a while... " % args.model)
         resp = send_async_request(ModelInstallRequest(args.model), ModelInstallResultRequest)
-
-        if resp:
-            print("DONE")
-        else:
-            print("ERROR")
-
 
 def handle_generate_mode(args):
     text = None
@@ -181,5 +188,6 @@ if __name__ == "__main__":
             subscriber.connect(f"{args.protocol}://{args.host}:{args.port+1}")
 
         subscriber.setsockopt_string(zmq.SUBSCRIBE, Topics.JOB_STATUS)
+        subscriber.setsockopt_string(zmq.SUBSCRIBE, Topics.JOB_PROGRESS)
 
         args.func(args)
