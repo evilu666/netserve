@@ -48,6 +48,7 @@ class TextGenerationRequest(Request):
     model: str
     text: str
     max_length: int = 50
+    revision: str | None = None
 
 @dataclass
 class ResultRequest(Request):
@@ -72,6 +73,7 @@ class ConversationRequest(Request):
     past_responses: list[str]| None = None
     min_length: int = 50
     uuid: str | None = None
+    revision: str | None = None
 
 @request("ConversationResult")
 @dataclass
@@ -99,6 +101,7 @@ class PipelineStatus(Enum):
 class PipelineControlRequest(Request):
     model: str
     control_type: ControlType
+    revision: str | None = None
 
 @request("PipelineControlResult")
 class PipelineControlResultRequest(ResultRequest):
@@ -114,6 +117,7 @@ class ModelInfo(JSONWizard):
     name: str
     size: int
     status: PipelineStatus
+    revision: str | None = None
 
 @request("ModelListing")
 @dataclass
@@ -134,6 +138,7 @@ class ModelListingResponse(Response):
 @dataclass
 class ModelInstallRequest(Request):
     model: str
+    revision: str | None = None
 
 @request("ModelInstallResult")
 @dataclass

@@ -50,6 +50,16 @@ def run_sync(coroutine, callback: callable = NOOP):
         print("Running in own loop", file=sys.stderr)
         callback(asyncio.run(func(*args, **kwargs)))
 
+def model_key(model: str, revision: str | None = None) -> str:
+    if revision:
+        return f"{model}$$${revision}"
+    return model
+
+def model_name(model: str, revision: str | None = None) -> str:
+    if revision:
+        return f"{model} ({revision})"
+    return model
+
 @ray.remote
 class ResultCache:
     results: dict
@@ -191,70 +201,85 @@ class PipelineActor:
         self.pipeline_locks = {}
 
 
-    def get_status(self, name: str) -> PipelineStatus:
-        if name in self.starting_pipelines:
+    def get_status(self, name: str, revision: str | None = None) -> PipelineStatus:
+        key = model_key(name, revision = revision)
+        if key in self.starting_pipelines:
             return PipelineStatus.STARTING
 
-        if name in self.installing_pipelines:
+        if key in self.installing_pipelines:
             return PipelineStatus.INSTALLING
 
-        if name in self.running_pipelines and self.running_pipelines[name]:
+        if key in self.running_pipelines and self.running_pipelines[key]:
             return PipelineStatus.RUNNING
 
         return PipelineStatus.STOPPED
 
-    def mark_installing(self, name: str):
-        self.installing_pipelines.add(name)
+    def mark_installing(self, name: str, revision: str | None = None):
+        self.installing_pipelines.add(model_key(name, revision))
 
-    def mark_install_done(self, name: str):
-        self.installing_pipelines.discard(name)
+    def mark_install_done(self, name: str, revision: str | None = None):
+        self.installing_pipelines.discard(model_key(name, revision))
 
-    def start_pipeline(self, name: str, callback: callable):
+    def start_pipeline(self, name: str, callback: callable, revision: str | None = None):
+        key = model_key(name, revision)
         async def __run():
             #if __DEBUG: print("Acquiring control lock")
             async with self.control_lock:
                 #if __DEBUG: print("Acquired control lock")
-                if name not in self.pipeline_locks:
-                    self.pipeline_locks[name] = Lock()
+                if key not in self.pipeline_locks:
+                    self.pipeline_locks[key] = Lock()
 
             #if __DEBUG: print(f"Acquiring pipeline lock for pipeline {name}")
-            async with self.pipeline_locks[name]:
+            async with self.pipeline_locks[key]:
                 #if __DEBUG: print(f"Acquired pipeline lock for pipeline {name}")
-                if self.get_status(name) == PipelineStatus.STOPPED:
-                    self.starting_pipelines.add(name)
+                if self.get_status(name, revision) == PipelineStatus.STOPPED:
+                    self.starting_pipelines.add(key)
                     #if __DEBUG: print(f"Allocating pipeline {name}")
-                    self.running_pipelines[name] = pipeline(model=name)
+                    try:
+                        self.running_pipelines[key] = pipeline(model=name, revision=revision)
+                    except Exception as e:
+                        return ErrorResponse(str(e))
+                    finally:
                     #if __DEBUG: print(f"Allocated pipeline {name}")
-                    self.starting_pipelines.remove(name)
+                        self.starting_pipelines.remove(key)
         return run_sync(__run(), callback)
 
-    def stop_pipeline(self, name: str, callback: callable):
+    def stop_pipeline(self, name: str, callback: callable, revision: str | None = None):
+        key = model_key(name, revision)
         async def __run():
             async with self.control_lock:
-                if name not in self.pipeline_locks:
-                    self.pipeline_locks[name] = Lock()
+                if key not in self.pipeline_locks:
+                    self.pipeline_locks[key] = Lock()
 
-            async with self.pipeline_locks[name]:
-                if self.get_status(name) != PipelineStatus.STOPPED:
-                    del self.running_pipelines[name]
+            async with self.pipeline_locks[key]:
+                if self.get_status(name, revision) != PipelineStatus.STOPPED:
+                    del self.running_pipelines[key]
         return run_sync(__run(), callback)
 
-    def restart_pipeline(self, name: str, callback: callable):
+    def restart_pipeline(self, name: str, callback: callable, revision: str | None = None):
+        key = model_key(name, revision)
         async def __run():
             async with self.control_lock:
-                if name not in self.pipeline_locks:
-                    self.pipeline_locks[name] = Lock()
+                if key not in self.pipeline_locks:
+                    self.pipeline_locks[key] = Lock()
 
-            async with self.pipeline_locks[name]:
-                if self.get_status(name) != PipelineStatus.STOPPED:
-                    del self.running_pipelines[name]
-                self.starting_pipelines.add(name)
-                self.running_pipelines[name] = pipeline(model=name)
-                self.starting_pipelines.discard(name)
+            async with self.pipeline_locks[key]:
+                if self.get_status(name, revision) != PipelineStatus.STOPPED:
+                    del self.running_pipelines[key]
+                self.starting_pipelines.add(key)
+                try:
+                    self.running_pipelines[key] = pipeline(model=name, revision=revision)
+                except Exception as e:
+                    return ErrorResponse(str(e))
+                finally:
+                    self.starting_pipelines.discard(key)
         return run_sync(__run(), callback)
 
-    def execute_pipeline(self, name: str, *args, **kwargs):
-        return self.running_pipelines[name](*args, **kwargs)
+    def execute_pipeline(self, name: str, *args, revision: str | None = None, **kwargs):
+        try:
+            return self.running_pipelines[model_key(name, revision)](*args, **kwargs)
+        except Exception as e:
+            return ErrorResponse(str(e))
 
 class GlobalState:
     progress_actor: ActorHandle
@@ -300,61 +325,78 @@ def handler(request_class):
     return __handler
 
 @ray.remote
-def start_pipeline(job_id: str, name: str, pipeline_actor: ActorHandle, progress_actor: ActorHandle, result_actor: ActorHandle, update_done = True, on_done: callable = NOOP):
+def start_pipeline(job_id: str, name: str, pipeline_actor: ActorHandle, progress_actor: ActorHandle, result_actor: ActorHandle, revision: str | None = None, update_done = True, on_done: callable = NOOP):
+    display_name = model_name(name, revision)
+    if __DEBUG: print(f"Scheduling start of pipeline {display_name}", file=sys.stderr)
+
     async def __run():
-        if __DEBUG: print(f"Starting pipeline {name}", file=sys.stderr)
+        if __DEBUG: print(f"Starting pipeline {display_name}", file=sys.stderr)
 
-        def __on_started(_):
-            if update_done:
-                if __DEBUG: print(f"Setting job with id {job_id} to DONE", file=sys.stderr)
+        def __on_started(result: ErrorResponse | None):
+            if result:
                 ray.get(progress_actor.update_done.remote(job_id))
-                ray.get(result_actor.put_result.remote(job_id, PipelineStatus.RUNNING))
+                ray.get(result_actor.put_result.remote(job_id, result))
+            else:
+                if __DEBUG: print(f"Started pipeline {display_name}", file=sys.stderr)
+                if update_done:
+                    if __DEBUG: print(f"Setting job with id {job_id} to DONE", file=sys.stderr)
+                    ray.get(progress_actor.update_done.remote(job_id))
+                    ray.get(result_actor.put_result.remote(job_id, PipelineStatus.RUNNING))
+                on_done(PipelineStatus.RUNNING)
 
-            if __DEBUG: print(f"Started pipeline {name}", file=sys.stderr)
-            on_done(PipelineStatus.RUNNING)
-        ray.get(pipeline_actor.start_pipeline.remote(name, __on_started))
+        ray.get(pipeline_actor.start_pipeline.remote(name, __on_started, revision = revision))
     run_sync(__run())
 
 @ray.remote
-def stop_pipeline(job_id: str, name: str, pipeline_actor: ActorHandle, progress_actor: ActorHandle, result_actor: ActorHandle, update_done = True):
+def stop_pipeline(job_id: str, name: str, pipeline_actor: ActorHandle, progress_actor: ActorHandle, result_actor: ActorHandle, revision: str | None = None, update_done = True):
+    display_name = model_name(name, revision)
     async def __run():
-        if __DEBUG: print(f"Stopping pipeline {name}", file=sys.stderr)
-        def __on_started(_):
-            if update_done:
+        if __DEBUG: print(f"Stopping pipeline {display_name}", file=sys.stderr)
+        def __on_started(result: ErrorResponse | None):
+            if result:
                 ray.get(progress_actor.update_done.remote(job_id))
-                ray.get(result_actor.put_result.remote(job_id, PipelineStatus.STOPPED))
+                ray.get(result_actor.put_result.remote(job_id, result))
+            else:
+                if __DEBUG: print(f"Stopped pipeline {display_name}", file=sys.stderr)
+                if update_done:
+                    ray.get(progress_actor.update_done.remote(job_id))
+                    ray.get(result_actor.put_result.remote(job_id, PipelineStatus.STOPPED))
 
-            if __DEBUG: print(f"Stopped pipeline {name}", file=sys.stderr)
-        ray.get(pipeline_actor.stop_pipeline.remote(name, __on_started))
+        ray.get(pipeline_actor.stop_pipeline.remote(name, __on_started, revision = revision))
     run_sync(__run())
 
 @ray.remote
-def restart_pipeline(job_id: str, name: str, pipeline_actor: ActorHandle, progress_actor: ActorHandle, result_actor: ActorHandle, update_done = True):
+def restart_pipeline(job_id: str, name: str, pipeline_actor: ActorHandle, progress_actor: ActorHandle, result_actor: ActorHandle, revision: str | None = None, update_done = True):
+    display_name = model_name(name, revision)
     async def __run():
-        if __DEBUG: print(f"Restarting pipeline {name}", file=sys.stderr)
-        def __on_started(_):
-            if update_done:
+        if __DEBUG: print(f"Restarting pipeline {display_name}", file=sys.stderr)
+        def __on_started(result: ErrorResponse | None):
+            if result:
                 ray.get(progress_actor.update_done.remote(job_id))
-                ray.get(result_actor.put_result.remote(job_id, PipelineStatus.RUNNING))
+                ray.get(result_actor.put_result.remote(job_id, result))
+            else:
+                if __DEBUG: print(f"Restarted pipeline {display_name}", file=sys.stderr)
+                if update_done:
+                    ray.get(progress_actor.update_done.remote(job_id))
+                    ray.get(result_actor.put_result.remote(job_id, PipelineStatus.RUNNING))
 
-            if __DEBUG: print(f"Restarted pipeline {name}", file=sys.stderr)
-        ray.get(pipeline_actor.restart_pipeline.remote(name, __on_started))
+        ray.get(pipeline_actor.restart_pipeline.remote(name, __on_started, revision = revision))
     run_sync(__run())
 
 @handler(PipelineControlRequest)
 def handle_pipeline_control(state: GlobalState, req: PipelineControlRequest) -> JobInfoResponse | ErrorResponse:
-    if ray.get(state.pipeline_actor.get_status.remote(req.model)) == PipelineStatus.INSTALLING:
+    if ray.get(state.pipeline_actor.get_status.remote(req.model, revision = req.revision)) == PipelineStatus.INSTALLING:
         return ErrorResponse("Pipeline is currently installing")
 
     uuid = JobHandler.reserve_id()
 
     ref = None
     if req.control_type == ControlType.STOP:
-        ref = stop_pipeline.remote(uuid, req.model, state.pipeline_actor, state.progress_actor, state.result_actor)
+        ref = stop_pipeline.remote(uuid, req.model, state.pipeline_actor, state.progress_actor, state.result_actor, revision = req.revision)
     elif req.control_type == ControlType.START:
-        ref = start_pipeline.remote(uuid, req.model, state.pipeline_actor, state.progress_actor, state.result_actor)
+        ref = start_pipeline.remote(uuid, req.model, state.pipeline_actor, state.progress_actor, state.result_actor, revision = req.revision)
     else:
-        ref = restart_pipeline.remote(uuid, req.model, state.pipeline_actor, state.progress_actor, state.result_actor)
+        ref = restart_pipeline.remote(uuid, req.model, state.pipeline_actor, state.progress_actor, state.result_actor, revision = req.revision)
 
     JobHandler.put_job(uuid, ref)
     return JobInfoResponse(uuid)
@@ -376,20 +418,37 @@ def handle_model_listing(state: GlobalState, req: ModelListingRequest) -> ModelL
     models = []
     for repo_info in scan_cache_dir().repos:
         if repo_info.repo_type == "model":
-            models.append(ModelInfo(
-                repo_info.repo_id,
-                repo_info.size_on_disk,
-                ray.get(state.pipeline_actor.get_status.remote(repo_info.repo_id))
-            ))
+            if repo_info.revisions:
+                for revision_info in repo_info.revisions:
+                    ref = next(iter(revision_info.refs)) if revision_info.refs else None
+                    try:
+                        status = ray.get(state.pipeline_actor.get_status.remote(repo_info.repo_id, revision = ref))
+                        print("status")
+                        models.append(ModelInfo(
+                            repo_info.repo_id,
+                            revision_info.size_on_disk,
+                            status,
+                            revision = ref
+                        ))
+                    except Exception as e:
+                        print_exc()
+                        print(e)
+            else:
+                models.append(ModelInfo(
+                    repo_info.repo_info,
+                    repo_info.size_on_disk,
+                    ray.get(state.pipeline_actor.get_status.remote(repo_info.repo_id))
+                ))
     return ModelListingResponse(models)
 
 @ray.remote
-def generate_text(job_id: str, model: str, text: str, max_length: int, pipeline_actor: ActorHandle, progress_actor: ActorHandle, result_actor: ActorHandle):
+def generate_text(job_id: str, model: str, text: str, max_length: int, pipeline_actor: ActorHandle, progress_actor: ActorHandle, result_actor: ActorHandle, revision: str | None = None):
+    display_name = model_name(model, revision)
     def __generate_text(_):
-        if __DEBUG: print(f"Generating text with model {model}")
+        if __DEBUG: print(f"Generating text with model {display_name}")
         result = None
         try:
-            result = ray.get(pipeline_actor.execute_pipeline.remote(model, text, max_new_tokens = max_length))[0]['generated_text']
+            result = ray.get(pipeline_actor.execute_pipeline.remote(model, text, revision = revision, max_new_tokens = max_length))[0]['generated_text']
         except Exception as e:
             traceback.print_exc()
             result = ErrorResponse(str(e))
@@ -397,15 +456,15 @@ def generate_text(job_id: str, model: str, text: str, max_length: int, pipeline_
         ray.get(progress_actor.update_done.remote(job_id))
         ray.get(result_actor.put_result.remote(job_id, result))
 
-    if pipeline_actor.get_status.remote(model) != PipelineStatus.RUNNING:
-        ray.get(start_pipeline.remote(job_id, model, pipeline_actor, progress_actor, result_actor, False, on_done = __generate_text))
+    if pipeline_actor.get_status.remote(model, revision = revision) != PipelineStatus.RUNNING:
+        ray.get(start_pipeline.remote(job_id, model, pipeline_actor, progress_actor, result_actor, update_done = False, revision = revision, on_done = __generate_text))
     else:
         __generate_text(None)
 
 @handler(TextGenerationRequest)
 def handle_text_generation(state: GlobalState, req: TextGenerationRequest) -> JobInfoResponse:
     uuid = JobHandler.reserve_id()
-    ref = generate_text.remote(uuid, req.model, req.text, req.max_length, state.pipeline_actor, state.progress_actor, state.result_actor)
+    ref = generate_text.remote(uuid, req.model, req.text, req.max_length, state.pipeline_actor, state.progress_actor, state.result_actor, revision = req.revision)
     JobHandler.put_job(uuid, ref)
 
     return JobInfoResponse(uuid)
@@ -423,13 +482,14 @@ def handle_text_generation_result(state: GlobalState, req: TextGenerationResultR
     return text_or_error if isinstance(text_or_error, ErrorResponse) else TextGenerationResponse(text_or_error)
 
 @ray.remote
-def generate_response(job_id: str, model: str, conversation_id: str, text: str, past_inputs: list, past_responses: list, pipeline_actor: ActorHandle, progress_actor: ActorHandle, result_actor: ActorHandle):
+def generate_response(job_id: str, model: str, conversation_id: str, text: str, past_inputs: list, past_responses: list, pipeline_actor: ActorHandle, progress_actor: ActorHandle, result_actor: ActorHandle, revision: str | None = None):
+    display_name = model_name(model, revision)
     def __generate_response(_):
-        if __DEBUG: print(f"Generating response with model {model}")
+        if __DEBUG: print(f"Generating response with model {display_name}")
         conv = Conversation(text, conversation_id, past_inputs, past_responses)
         result = None
         try:
-            result = ray.get(pipeline_actor.execute_pipeline.remote(model, conv))
+            result = ray.get(pipeline_actor.execute_pipeline.remote(model, conv, revision = revision))
             result = result.generated_responses[-1]
         except Exception as e:
             traceback.print_exc()
@@ -439,7 +499,8 @@ def generate_response(job_id: str, model: str, conversation_id: str, text: str, 
         ray.get(result_actor.put_result.remote(job_id, result))
 
     if pipeline_actor.get_status.remote(model) != PipelineStatus.RUNNING:
-        ray.get(start_pipeline.remote(job_id, model, pipeline_actor, progress_actor, result_actor, False, on_done = __generate_response))
+        print("Rev:", revision)
+        ray.get(start_pipeline.remote(job_id, model, pipeline_actor, progress_actor, result_actor, update_done = False, revision = revision, on_done = __generate_response))
     else:
         __generate_response(None)
     #
@@ -464,7 +525,7 @@ def generate_response(job_id: str, model: str, conversation_id: str, text: str, 
 @handler(ConversationRequest)
 def handle_conversation(state: GlobalState, req: ConversationRequest) -> JobInfoResponse:
     uuid = JobHandler.reserve_id()
-    ref = generate_response.remote(uuid, req.model, req.uuid, req.text, req.past_inputs, req.past_responses, state.pipeline_actor, state.progress_actor, state.result_actor)
+    ref = generate_response.remote(uuid, req.model, req.uuid, req.text, req.past_inputs, req.past_responses, state.pipeline_actor, state.progress_actor, state.result_actor, revision = req.revision)
     JobHandler.put_job(uuid, ref)
 
     return JobInfoResponse(uuid)
@@ -483,9 +544,7 @@ def handle_conversation_result(state: GlobalState, req: ConversationResultReques
 
 
 @ray.remote
-def install_model(job_id: str, model: str, progress_actor: ActorHandle, result_actor: ActorHandle):
-
-
+def install_model(job_id: str, model: str, progress_actor: ActorHandle, result_actor: ActorHandle, revision: str | None = None):
     async def __run():
 
         class ProgressHandler(std_tqdm):
@@ -503,7 +562,7 @@ def install_model(job_id: str, model: str, progress_actor: ActorHandle, result_a
         try:
             with concurrent.futures.ThreadPoolExecutor() as pool:
                 loop = asyncio.get_running_loop()
-                await loop.run_in_executor(pool, lambda: snapshot_download(model, max_workers=4, tqdm_class=ProgressHandler))
+                await loop.run_in_executor(pool, lambda: snapshot_download(model, revision = revision, max_workers=4, tqdm_class=ProgressHandler))
             result = True
         except Exception as e:
             traceback.print_exc()
@@ -515,11 +574,11 @@ def install_model(job_id: str, model: str, progress_actor: ActorHandle, result_a
 
 @handler(ModelInstallRequest)
 def handle_model_install(state: GlobalState, req: ModelInstallRequest) -> JobInfoResponse:
-    if ray.get(state.pipeline_actor.get_status.remote(req.model)) == PipelineStatus.INSTALLING:
+    if ray.get(state.pipeline_actor.get_status.remote(req.model, revision = req.revision)) == PipelineStatus.INSTALLING:
         return ErrorResponse("Model is currently installing")
 
     uuid = JobHandler.reserve_id()
-    ref = install_model.remote(uuid, req.model, state.progress_actor, state.result_actor)
+    ref = install_model.remote(uuid, req.model, state.progress_actor, state.result_actor, revision = req.revision)
     JobHandler.put_job(uuid, ref)
 
     return JobInfoResponse(uuid)
@@ -612,6 +671,6 @@ if __name__ == "__main__":
     init_ray(args.threads)
 
     loop = asyncio.get_event_loop()
-    loop.set_debug(True)
+    loop.set_debug(__DEBUG)
     loop.run_until_complete(main_loop(loop, server_socket_bind, publisher_socket_bind))
     loop.close()

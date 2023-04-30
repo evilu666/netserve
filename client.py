@@ -15,6 +15,11 @@ import progressbar
 
 __DEBUG = False
 
+def model_name(model: str, revision: str | None = None) -> str:
+    if revision:
+        return f"{model} ({revision})"
+    return model
+
 # https://stackoverflow.com/a/1094933
 def sizeof_fmt(num, suffix="B"):
     for unit in ["", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi"]:
@@ -81,8 +86,8 @@ def handle_model_mode(args):
             print("Must provide model with start, stop or restart action!", file=sys.stderr)
             return
 
-        print(args.action.capitalize() + ("ing model '%s'... " % args.model), end = "")
-        resp = send_async_request(PipelineControlRequest(model = args.model, control_type = ControlType[args.action.upper()]), PipelineControlResultRequest)
+        print(args.action.capitalize() + ("ing model '%s'... " % model_name(args.model, args.revision)), end = "")
+        resp = send_async_request(PipelineControlRequest(model = args.model, control_type = ControlType[args.action.upper()], revision = args.revision), PipelineControlResultRequest)
         if resp:
             print("DONE")
         else:
@@ -95,16 +100,16 @@ def handle_model_mode(args):
                     print(model.name)
             else:
                 tbl = PrettyTable();
-                tbl.field_names = ["Name", "Size", "Status"]
+                tbl.field_names = ["Name", "Revision", "Size", "Status"]
                 for model in resp.models:
-                    tbl.add_row([model.name, sizeof_fmt(model.size), PipelineStatus(model.status).name])
+                    tbl.add_row([model.name, model.revision, sizeof_fmt(model.size), PipelineStatus(model.status).name])
                 print(tbl)
     elif args.action == "install":
         if not args.model:
             print("Error: Must provide a model to install!", file=sys.stderr)
             return
         print("Installing model '%s', this may take a while... " % args.model)
-        resp = send_async_request(ModelInstallRequest(args.model), ModelInstallResultRequest)
+        resp = send_async_request(ModelInstallRequest(args.model, revision = args.revision), ModelInstallResultRequest)
 
 def handle_generate_mode(args):
     text = None
@@ -116,7 +121,7 @@ def handle_generate_mode(args):
             return
         text = args.text
 
-    resp = send_async_request(TextGenerationRequest(args.model, text, max_length=args.max_length), TextGenerationResultRequest)
+    resp = send_async_request(TextGenerationRequest(args.model, text, max_length=args.max_length, revision = args.revision), TextGenerationResultRequest)
     if resp:
         print(resp.text)
 
@@ -125,12 +130,15 @@ def handle_converse_mode(args):
         print("Error: past inputs length must match past responses length")
         return
 
-    resp = send_async_request(ConversationRequest(
-        args.model,
-        args.input,
-        past_inputs = args.past_input,
-        past_responses = args.past_response,
-        min_length=args.min_length),
+    resp = send_async_request(
+        ConversationRequest(
+            args.model,
+            args.input,
+            past_inputs = args.past_input,
+            past_responses = args.past_response,
+            min_length=args.min_length,
+            revision = args.revision
+        ),
         ConversationResultRequest
     )
 
@@ -151,6 +159,7 @@ if __name__ == "__main__":
     model_parser = root_subparsers.add_parser("model", help="List, install, start or stop available models")
     model_parser.add_argument("action", choices = ["start", "stop", "restart", "list", "install"], help="The action to perform")
     model_parser.add_argument("model", nargs = '?', type=str, help="The model for which to perform the action (not needed for the list action)")
+    model_parser.add_argument("-r", "--revision", nargs = '?', type=str, default=None, help="The revision to checkout, defaults to the master/main branch")
     model_parser.add_argument("-f", "--filter", nargs = '?', type=str, help="Pattern to use for filtering when using the list option")
     model_parser.add_argument("--names-only", action="store_true", help="When set will only print a list of model names")
     model_parser.set_defaults(func = handle_model_mode)
@@ -158,6 +167,7 @@ if __name__ == "__main__":
     generate_parser = root_subparsers.add_parser("generate", help="Generate text using the provided input")
     generate_parser.add_argument("model", type=str, help="The model to use for text generation")
     generate_parser.add_argument("text", type=str, nargs = '?', help="The text to use as input for generation (not needed when reading from standard input)")
+    generate_parser.add_argument("-r", "--revision", nargs = '?', type=str, default=None, help="The revision of the model to use for generation, defaults to the master/main branch")
     generate_parser.add_argument("-i", "--stdin", action="store_true", help="When set to true will read the input text from the standard input")
     generate_parser.add_argument("-m", "--max-length", type=int, default=50, help="Maximum number of additional tokens to generate")
     generate_parser.set_defaults(func = handle_generate_mode)
@@ -165,6 +175,7 @@ if __name__ == "__main__":
     converse_parser = root_subparsers.add_parser("converse", help="Gnerate text in a conversational format")
     converse_parser.add_argument("model", type=str, help="The model to use for text generation")
     converse_parser.add_argument("input", type=str, help="The user input to get a response for")
+    converse_parser.add_argument("-r", "--revision", nargs = '?', type=str, default=None, help="The revision of the mode to use for generation, defaults to the master/main branch")
     converse_parser.add_argument("--past-input", type=str, nargs="*", default=[], help="A past user input, can be specified multiple times but must match the past response count")
     converse_parser.add_argument("--past-response", type=str, nargs="*", default=[], help="A past respone, can be specified multiple times but must match the past user input count")
     converse_parser.add_argument("-m", "--min-length", type=int, default=50, help="Minimum number of tokens to generate")
